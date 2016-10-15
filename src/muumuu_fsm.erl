@@ -1,156 +1,225 @@
--module(muumuu_fsm).
+%%% Homer's program goes a bit like this:
+%%%
+%%% 1          [press any key]
+%%%                   |
+%%%             (key pressed)
+%%%                   |
+%%% 2       [check core temperature (first)]
+%%%               \________,________/
+%%%                        |
+%%%                     (yes/no)
+%%%                        |
+%%% 3         [venting radioactive gases (first)]
+%%%            |                   |
+%%%          (yes)      ,-<-,     (no)
+%%%            |        |   |      |
+%%%   [gas blows away crop] |  [venting prevents explosions]
+%%%            |            |      |           |
+%%%            |            '--<-(yes)       (no)
+%%%            \                              /
+%%%             \______________,_____________/
+%%%                            v
+%%%                            |
+%%% 4                 [wait for command]<--------,
+%%%                        /       \             |
+%%%                  (get data)   (timeout)      |
+%%%                       |         |            |
+%%%                       |     [ask question]   |
+%%%                       |        /      \      |
+%%%                       |    (Yes)     (No)    |
+%%%                       |     /          |     |
+%%%                       +----'           '-----+
+%%%                       |                      |
+%%%                      [show result] -->-------'
+%%%
+%%% Simple isn't it?
 
--export([init/0]).
+-module(muumuu_fsm).
+-behaviour(gen_fsm).
 
 -define(MAX_NO_VENT, 5).
+-record(state, {no_vent_count=0,
+                pid,
+                yes,
+                no}).
 
--record(state, {}).
+-export([start_link/0]).
+-export([init/1, terminate/3, code_change/4, % setup/teardown/upgrade
+         handle_event/3, handle_sync_event/4, handle_info/3, % global events
+         %% only async events
+         wait_any_key/2, first_core_check/2, first_gas_vent/2,
+         venting_prevents_explosions/2, wait_for_command/2]).
 
+start_link() ->
+    gen_fsm:start_link(?MODULE, [], []).
 
-init() ->
-  <<A:32, B:32, C:32>> = crypto:strong_rand_bytes(12),
-  random:seed(A,B,C),
-  {ok, wait_any_key, prompt(wait_any_key, #state{})}.
+%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% GEN_FSM CALLBACKS %%%
+%%%%%%%%%%%%%%%%%%%%%%%%%
+init([]) ->
+    <<A:32, B:32, C:32>> = crypto:rand_bytes(12),
+    random:seed(A,B,C),
+    {ok, wait_any_key, prompt(wait_any_key, #state{})}.
 
+terminate(_Reason, _StateName, _State) ->
+    ok.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% States and Transitions %%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+code_change(_OldVsn, StateName, State, _Extra) ->
+    {ok, StateName, State}.
+
+handle_event(_Event, StateName, State) ->
+    {next_state, StateName, State}.
+
+handle_sync_event(_Event, _From, StateName, State) ->
+    {next_state, StateName, State}.
+
+handle_info(_Event, StateName, State) ->
+    {next_state, StateName, State}.
 
 wait_any_key(_, State) ->
-  {next_state, first_core_check, prompt(first_core_check,State)}.
-
+    {next_state, first_core_check, prompt(first_core_check, State)}.
 
 first_core_check(no, State) ->
-  {next_state, first_gas_vent, prompt(first_gas_vent, State)};
+    {next_state, first_gas_vent, prompt(first_gas_vent, State)};
 first_core_check(yes, State) ->
-  show_core_temperature(),
-  {next_state, first_gas_vent, prompt(first_gas_vent, State)}.
+    show_core_temperature(),
+    {next_state, first_gas_vent, prompt(first_gas_vent, State)}.
 
-
-
-firts_gas_vent(no, State) ->
-  StateName = venting_prevents_explosions,
-  {next_state, StateName, prompt(StateName, State)}.
+first_gas_vent(no, State) ->
+    StateName = venting_prevents_explosions,
+    {next_state, StateName, prompt(StateName, State)};
 first_gas_vent(yes, State) ->
     show_blow_crops_away(),
     {next_state, wait_for_command, prompt(wait_for_command, State), 10000}.
 
+venting_prevents_explosions(no, State) ->
+    {next_state,
+     wait_for_command,
+     prompt(wait_for_command, State#state{no_vent_count=1}),
+     10000};
+venting_prevents_explosions(yes, State) ->
+    first_gas_vent(yes, State).
 
-wait_for_command() ->
-  case wait_cmd(10000) of
-    timeout ->
-      {Opt, Yes, No} = random_option(),
-      case option(Opt) of
-        yes -> Yes();
-        no -> No()
-      end;
-    Cmd ->
-      case match_option(Cmd) of
-        {_, Yes, _} -> Yes();
-        _ -> noop
-      end
-  end,
-  wait_for_command().
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Options and Response Handling %%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-option(Prompt) ->
-  show_option(Prompt),
-  Data = io:get_line(""),
-  case iolist_to_binary(Data) of
-    <<"Y", _/binary>> -> yes;
-    <<"y", _/binary>> -> yes;
-    <<"N", _/binary>> -> no;
-    <<"n", _/binary>> -> no;
-    _ -> ambiguous
-  end.
-
-show_option(Str) ->
-  io:format("~s (Y/N)~n",[Str]).
+wait_for_command(timeout, State) ->
+    {Opt, Yes, No} = random_option(),
+    {next_state, wait_for_command, prompt(Opt, State#state{yes=Yes, no=No})};
+wait_for_command({_Event, Yes, _No}, State) ->
+    %% Random event result
+    NewState = Yes(State),
+    {next_state, wait_for_command, prompt(wait_for_command, NewState), 10000};
+wait_for_command(Event, State) ->
+    Action = case Event of
+        no -> State#state.no;
+        yes -> State#state.yes;
+        invalid_opt -> fun noop/1
+    end,
+    NewState = Action(State),
+    {next_state, wait_for_command, prompt(wait_for_command, NewState), 10000}.
 
 
-wait_cmd(Timeout) ->
-  Parent = self(),
-  Pid = proc_lib:spawn(fun() -> Parent ! io:get_line("") end),
-  receive
-    Data ->
-      Data
-  after Timeout ->
-      exit(Pid, kill),
-      timeout
-  end.
+%% We make the prompt asynchronous by spawning a linked one-off process
+%% that messages back to the parent calling.
+prompt(Opt, State=#state{pid=undefined}) ->
+    case Opt of
+        wait_any_key -> io:format("To Start, Press Any Key.~n> ");
+        first_core_check -> show_option("Check core temperature?");
+        first_gas_vent -> show_option("Vent radioactive gas?");
+        venting_prevents_explosions -> show_option("Venting prevents explosion.");
+        core_check -> show_option("Check core temperature?");
+        gas_vent -> show_option("Vent radioactive gas?");
+        sound_horn -> show_option("Sound alertness horn?");
+        decalcify -> show_option("Decalcify calcium ducts?");
+        wait_for_command -> ok
+    end,
+    State#state{pid=get_input()};
+prompt(Opt, State=#state{pid=Pid}) when is_pid(Pid) ->
+    unlink(Pid),
+    exit(Pid, kill),
+    prompt(Opt, State#state{pid=undefined}).
+
+get_input() ->
+    Parent = self(),
+    spawn_link(fun() ->
+        gen_fsm:send_event(Parent, option(io:get_line("")))
+    end).
+
+option(List) when is_list(List) -> option(iolist_to_binary(List));
+option(Bin) when byte_size(Bin) =< 4 -> % 4 including \n
+    case Bin of
+        <<"Y", _/binary>> -> yes;
+        <<"y", _/binary>> -> yes;
+        <<"N", _/binary>> -> no;
+        <<"n", _/binary>> -> no;
+        _ -> ambiguous
+    end;
+option(Bin) ->
+    match_option(Bin).
+
+noop(State) -> State.
+
+core_temperature(State) ->
+    show_core_temperature(),
+    State.
+
+vent_gas(State=#state{no_vent_count=?MAX_NO_VENT}) ->
+    show_pressure_too_high(),
+    State;
+vent_gas(State) ->
+    show_blow_crops_away(),
+    State#state{no_vent_count=0}.
+
+no_venting(State=#state{no_vent_count=Count}) ->
+    State#state{no_vent_count=Count+1}.
+
+sound_horn(State) ->
+    show_sound_horn(),
+    State.
+
+
+show_core_temperature() -> io:format("Core temperature normal.~n").
+
+show_blow_crops_away() -> io:format("*Gas blows away corn crop*~n").
+
+show_sound_horn() -> io:format("*horn sounds in the distance*~n").
+
+show_pressure_too_high() -> io:format("Pressure too high. Tank must be shut down manually.~n").
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Options and Response Handling %%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+show_option(Str) -> io:format("~s (Y/N)~n> ", [Str]).
 
 random_option() ->
-  Pos = random:uniform(tuple_size(opts())),
-  {_, Val} = element(Pos, opts()),
-  Val.
+    Pos = random:uniform(tuple_size(opts())),
+    {_, Val} = element(Pos, opts()),
+    Val.
 
 match_option(Data) ->
-  case [Vals || {Pattern, Vals} <- tuple_to_list(opts()),
-                nomatch =/= re:run(Data, Pattern, [caseless])] of
-    [Opt|_] -> Opt;
-    [] -> invalid_opt
-  end.
-
+    case [Vals || {Pattern, Vals} <- tuple_to_list(opts()),
+                  nomatch =/= re:run(Data, Pattern, [caseless])] of
+              [Opt|_] -> Opt;
+        [] -> invalid_opt
+    end.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Defining Options/Events %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 opts() ->
     {{"(check|core|temp)",
-      {"Check core temperature?",
-       fun core_temperature/0,
-       fun noop/0}},
+      {core_check,
+       fun core_temperature/1,
+       fun noop/1}},
      {"(vent|rad|gas)",
-      {"Vent radioactive gas?",
-       fun vent_gas/0,
-       fun no_venting/0}},
+      {gas_vent,
+       fun vent_gas/1,
+       fun no_venting/1}},
      {"(sound|alert|horn)",
-      {"Sound alertness horn?",
-       fun sound_horn/0,
-       fun noop/0}},
+      {sound_horn,
+       fun sound_horn/1,
+       fun noop/1}},
      {"(calc|duct)",
-      {"Decalcify calcium ducts?",
-       fun noop/0,
-       fun noop/0}}}.
+      {decalcify,
+       fun noop/1,
+       fun noop/1}}}.
 
-
-
-
-noop() -> ok.
-
-venting_prevents_explosions() ->
-    case option("Venting prevents explosion.") of
-        yes -> blow_crops_away();
-        no -> noop()
-    end.
-
-core_temperature() -> io:format("Core temperature normal.~n").
-
-blow_crops_away() -> io:format("*Gas blows away corn crop*~n").
-
-sound_horn() -> io:format("*horn sounds in the distance*~n").
-
-pressure_too_high() -> io:format("Pressure too high. Tank must be shut down manually.~n").
-
-vent_gas() ->
-    %% After ?MAX_NO_VENT, pressure has to be shut down
-    %% manually -- unsupported in this here program!
-    case get(missed) of
-      ?MAX_NO_VENT ->
-            pressure_too_high();
-        _ ->
-            put(missed, 0),
-            blow_crops_away()
-    end.
-
-no_venting() ->
-    case get(missed) of
-        undefined -> put(missed, 1);
-        N -> put(missed, N+1)
-    end.
