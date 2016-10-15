@@ -1,40 +1,40 @@
 -module(muumuu_fsm).
 
--export([start/0]).
+-export([init/0]).
 
 -define(MAX_NO_VENT, 5).
 
+-record(state, {}).
 
-start() ->
+
+init() ->
   <<A:32, B:32, C:32>> = crypto:strong_rand_bytes(12),
   random:seed(A,B,C),
-  wait_any_key().
+  {ok, wait_any_key, prompt(wait_any_key, #state{})}.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% States and Transitions %%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-wait_any_key() ->
-  io:get_line("To Start, Press Any Key.\n"),
-  first_core_check().
+wait_any_key(_, State) ->
+  {next_state, first_core_check, prompt(first_core_check,State)}.
 
 
-first_core_check() ->
-  case option("Check core temperature?") of
-    yes -> core_temperature();
-    no -> noop()
-  end,
-  first_gas_vent().
+first_core_check(no, State) ->
+  {next_state, first_gas_vent, prompt(first_gas_vent, State)};
+first_core_check(yes, State) ->
+  show_core_temperature(),
+  {next_state, first_gas_vent, prompt(first_gas_vent, State)}.
 
 
-first_gas_vent() ->
-  case option("Vent radioactive gas?") of
-    yes -> blow_crops_away();
-    no -> venting_prevents_explosions()
-  end,
-  wait_for_command().
 
+firts_gas_vent(no, State) ->
+  StateName = venting_prevents_explosions,
+  {next_state, StateName, prompt(StateName, State)}.
+first_gas_vent(yes, State) ->
+    show_blow_crops_away(),
+    {next_state, wait_for_command, prompt(wait_for_command, State), 10000}.
 
 
 wait_for_command() ->
@@ -57,6 +57,7 @@ wait_for_command() ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Options and Response Handling %%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 
 option(Prompt) ->
   show_option(Prompt),
