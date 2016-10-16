@@ -1,4 +1,3 @@
-.eunit
 deps
 *.o
 *.beam
@@ -7,7 +6,9 @@ erl_crash.dump
 ebin
 rel/example_project
 .concrete/DEV_MODE
+_build
 .rebar
+rebar.lock
 
 #emacs temp files
 *.*~
