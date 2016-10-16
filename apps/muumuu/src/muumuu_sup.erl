@@ -12,5 +12,5 @@ start_link() ->
 init([]) ->
   {ok, {{one_for_one, 1, 5},
         [{console,
-         {muumuu_fsm, start_link, []},
-         permanent, 5000, worker, [mumuu_fsm]}]}}.
+          {muumuu_fsm, start_link, []},
+          permanent, 5000, worker, [mumuu_fsm]}]}}.
