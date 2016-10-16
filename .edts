@@ -1,0 +1,5 @@
+:name "how_ferd"
+:node-sname "ferd@localhost"
+:lib-dirs '("_build/default/lib")
+:app-include-dirs '("include")
+:otp-path "~/.kerl/install/17.5"
