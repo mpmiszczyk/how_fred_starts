@@ -51,7 +51,7 @@
          venting_prevents_explosions/2, wait_for_command/2]).
 
 start_link() ->
-    gen_fsm:start_link(?MODULE, [], []).
+  gen_fsm:start_link(?MODULE, [], []).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%
 %%% GEN_FSM CALLBACKS %%%
